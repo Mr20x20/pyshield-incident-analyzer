@@ -78,69 +78,56 @@ def parse(log_path: str) -> list[dict]:
 
 # ── Internal ──────────────────────────────────────────────────────────────────
 def _parse_event(element: ET.Element) -> dict | None:
-    """Parse a single <Event> XML element into a normalized dict."""
     try:
-        # ── System section ────────────────────────────────────────────────────
-        system = (
-            element.find("e:System", _NS) or
-            element.find("System")
-        )
+        # Strip namespace from all tags for universal compatibility
+        # Handles both xmlns="..." and xmlns='...' formats
+        def find_tag(parent, tag):
+            # Try with namespace, without, and with Clark notation
+            for ns in [_NS, {}]:
+                el = parent.find(f"e:{tag}", _NS) if ns else parent.find(tag)
+                if el is not None:
+                    return el
+            # Clark notation fallback
+            return parent.find(
+                f"{{http://schemas.microsoft.com/win/2004/08/events/event}}{tag}"
+            )
+
+        system = find_tag(element, "System")
         if system is None:
             return None
 
-        event_id_el = (
-            system.find("e:EventID", _NS) or
-            system.find("EventID")
-        )
+        event_id_el = find_tag(system, "EventID")
         if event_id_el is None:
             return None
 
         event_id = int(event_id_el.text.strip())
-
-        # Only process Event IDs we care about
         if event_id not in WINDOWS_EVENT_IDS:
             return None
 
         category, description, severity = WINDOWS_EVENT_IDS[event_id]
 
-        # Timestamp
-        time_el = (
-            system.find("e:TimeCreated", _NS) or
-            system.find("TimeCreated")
-        )
+        time_el   = find_tag(system, "TimeCreated")
         timestamp = ""
         if time_el is not None:
-            raw_time = time_el.get("SystemTime", "")
+            raw_time  = time_el.get("SystemTime", "")
             timestamp = _parse_timestamp(raw_time)
 
-        # Hostname
-        computer_el = (
-            system.find("e:Computer", _NS) or
-            system.find("Computer")
-        )
-        hostname = computer_el.text.strip() if computer_el is not None else ""
+        computer_el = find_tag(system, "Computer")
+        hostname    = computer_el.text.strip() if computer_el is not None else ""
 
-        # ── EventData section ─────────────────────────────────────────────────
-        event_data = (
-            element.find("e:EventData", _NS) or
-            element.find("EventData")
-        )
-        data = _extract_event_data(event_data)
+        event_data = find_tag(element, "EventData")
+        data       = _extract_event_data_robust(event_data)
 
-        # Extract common fields from EventData
         username = (
             data.get("TargetUserName") or
             data.get("SubjectUserName") or
-            data.get("AccountName") or
-            ""
+            data.get("AccountName") or ""
         )
         src_ip = (
             data.get("IpAddress") or
-            data.get("WorkstationName") or
-            ""
+            data.get("WorkstationName") or ""
         )
 
-        # Clean up placeholder values Windows uses
         if username in ("-", "SYSTEM", ""):
             username = data.get("SubjectUserName", "")
         if src_ip in ("-", "::1", "127.0.0.1"):
@@ -163,8 +150,19 @@ def _parse_event(element: ET.Element) -> dict | None:
     except Exception as e:
         logger.debug("Failed to parse event element: %s", e)
         return None
-
-
+    
+def _extract_event_data_robust(event_data) -> dict:
+    if event_data is None:
+        return {}
+    result = {}
+    for child in event_data:
+        # Strip namespace from tag if present
+        tag  = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        name = child.get("Name", "")
+        value = (child.text or "").strip()
+        if name:
+            result[name] = value
+    return result
 def _extract_event_data(event_data: ET.Element | None) -> dict:
     """
     Extract all <Data Name="...">value</Data> pairs into a dict.
