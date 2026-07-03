@@ -222,19 +222,28 @@ means no admin group addition alerts ever fire.
 - Extracts `<EventData>` section: username, IP, logon type
 - Handles both namespaced (`e:EventID`) and plain XML
 
-`_extract_event_data(event_data)`
-- Parses all `<Data Name="...">value</Data>` pairs into a dict
-- This is where usernames, IPs, and logon types live in Windows XML
+`_extract_event_data_robust(event_data)`
+- Strips namespace prefix from all child tags using `tag.split("}")[-1]`
+- Parses all <Data Name="...">value</Data> pairs into a dict
+- Handles both namespaced and plain XML formats automatically
 
 `_parse_timestamp(raw)`
 - Converts `"2026-06-27T10:00:00.000000000Z"` → `"2026-06-27 10:00:00"`
 - Trims nanoseconds Python cannot handle
 
-**Why `_NS` namespace dict matters:**
-Windows Event Log XML uses a Microsoft namespace prefix. Without `_NS`,
-element searches like `system.find("EventID")` find nothing — you must
-use `system.find("e:EventID", _NS)`. This is the most common mistake
-when parsing Windows Event Logs.
+`find_tag(parent, tag)` — internal helper
+- Tries three lookup strategies in order:
+  1. Namespaced: `e:TagName` with _NS dict
+  2. Plain: `TagName` without namespace
+  3. Clark notation: `{namespace-url}TagName`
+- This makes the parser compatible with all Windows XML export formats
+
+**Why three-strategy namespace lookup matters:**
+Windows exports XML with `xmlns='...'` (single quotes) or `xmlns="..."`
+(double quotes) depending on the export method. PowerShell `ConvertTo-Xml`
+and `wevtutil` produce different formats. The three-strategy approach
+handles all variants — without it, single-quote namespace exports return
+0 events silently.
 
 **What breaks if removed:**
 Windows log analysis disappears completely.
